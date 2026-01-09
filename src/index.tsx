@@ -1,17 +1,15 @@
 import {
   ButtonItem,
-  definePlugin,
   PanelSection,
   PanelSectionRow,
-  ServerAPI,
-  staticClasses,
-} from "decky-frontend-lib";
-import { FC, useState, useEffect } from "react";
+  staticClasses
+} from "@decky/ui";
+import {
+  callable,
+  definePlugin,
+} from "@decky/api";
+import { useState, useEffect } from "react";
 import { FaKeyboard } from "react-icons/fa";
-
-interface ContentProps {
-  serverAPI: ServerAPI;
-}
 
 interface ServerStatus {
   running: boolean;
@@ -19,11 +17,26 @@ interface ServerStatus {
   clients: number;
 }
 
-const Content: FC<ContentProps> = ({ serverAPI }) => {
+const startServer = callable<[port: number], { success: boolean; code?: string; port?: number }>("start_server");
+const stopServer = callable<[], { success: boolean }>("stop_server");
+const getServerStatus = callable<[], ServerStatus>("get_server_status");
+
+function Content() {
   const [running, setRunning] = useState(false);
   const [code, setCode] = useState("");
   const [clients, setClients] = useState(0);
   const [port] = useState(8765);
+
+  const updateStatus = async () => {
+    try {
+      const status = await getServerStatus();
+      setRunning(status.running);
+      setCode(status.code || "");
+      setClients(status.clients || 0);
+    } catch (error) {
+      console.error("Error fetching status:", error);
+    }
+  };
 
   useEffect(() => {
     updateStatus();
@@ -31,38 +44,43 @@ const Content: FC<ContentProps> = ({ serverAPI }) => {
     return () => clearInterval(interval);
   }, []);
 
-  const updateStatus = async () => {
-    const result = await serverAPI.callPluginMethod<{}, ServerStatus>("get_server_status", {});
-    if (result.success) {
-      setRunning(result.result.running);
-      setCode(result.result.code || "");
-      setClients(result.result.clients || 0);
+  const handleStartServer = async () => {
+    try {
+      const result = await startServer(port);
+      if (result.success) {
+        updateStatus();
+      }
+    } catch (error) {
+      console.error("Error starting server:", error);
     }
   };
 
-  const startServer = async () => {
-    const result = await serverAPI.callPluginMethod("start_server", { port });
-    if (result.success) {
+  const handleStopServer = async () => {
+    try {
+      await stopServer();
       updateStatus();
+    } catch (error) {
+      console.error("Error stopping server:", error);
     }
-  };
-
-  const stopServer = async () => {
-    await serverAPI.callPluginMethod("stop_server", {});
-    updateStatus();
-  };
-
-  const getLocalIP = () => {
-    return "steamdeck.local";
   };
 
   return (
     <PanelSection title="Remote Keyboard">
       <PanelSectionRow>
         {!running ? (
-          <ButtonItem layout="below" onClick={startServer} label="Start Server" />
+          <ButtonItem
+            layout="below"
+            onClick={handleStartServer}
+          >
+            Start Server
+          </ButtonItem>
         ) : (
-          <ButtonItem layout="below" onClick={stopServer} label="Stop Server" />
+          <ButtonItem
+            layout="below"
+            onClick={handleStopServer}
+          >
+            Stop Server
+          </ButtonItem>
         )}
       </PanelSectionRow>
 
@@ -70,7 +88,7 @@ const Content: FC<ContentProps> = ({ serverAPI }) => {
         <>
           <PanelSectionRow>
             <div style={{ fontSize: "14px" }}>
-              <strong>URL:</strong> http://{getLocalIP()}:{port}
+              <strong>URL:</strong> http://steamdeck.local:{port}
             </div>
           </PanelSectionRow>
           <PanelSectionRow>
@@ -87,12 +105,18 @@ const Content: FC<ContentProps> = ({ serverAPI }) => {
       )}
     </PanelSection>
   );
-};
+}
 
-export default definePlugin((serverApi: ServerAPI) => {
+export default definePlugin(() => {
+  console.log("Deckyboard initializing");
+
   return {
-    title: <div className={staticClasses.Title}>Remote Keyboard</div>,
-    content: <Content serverAPI={serverApi} />,
+    name: "Deckyboard",
+    titleView: <div className={staticClasses.Title}>Remote Keyboard</div>,
+    content: <Content />,
     icon: <FaKeyboard />,
+    onDismount() {
+      console.log("Deckyboard unloading");
+    },
   };
 });

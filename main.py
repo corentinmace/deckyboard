@@ -3,35 +3,47 @@ import secrets
 import subprocess
 from aiohttp import web
 import aiohttp
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class Plugin:
     async def _main(self):
-        self.server_task = None
+        self.server_runner = None
+        self.server_site = None
         self.access_code = None
         self.connected_clients = set()
+        logger.info("Deckyboard plugin initialized")
         
     async def _unload(self):
-        if self.server_task:
-            self.server_task.cancel()
+        logger.info("Deckyboard plugin unloading")
+        if self.server_site:
+            await self.server_site.stop()
+        if self.server_runner:
+            await self.server_runner.cleanup()
     
     async def start_server(self, port=8765):
-        """Démarre le serveur WebSocket"""
-        if self.server_task:
+        """Starts the WebSocket server"""
+        if self.server_runner:
             return {"success": False, "error": "Server already running"}
         
         # Génère un code à 6 caractères
         self.access_code = secrets.token_urlsafe(4)[:6].upper()
+        logger.info(f"Starting server with code: {self.access_code}")
         
         app = web.Application()
         app.router.add_get('/ws', self.websocket_handler)
         app.router.add_get('/', self.serve_client_page)
-        app.router.add_static('/static', './static')
         
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', port)
+        self.server_runner = web.AppRunner(app)
+        await self.server_runner.setup()
+        self.server_site = web.TCPSite(self.server_runner, '0.0.0.0', port)
         
-        self.server_task = asyncio.create_task(site.start())
+        await self.server_site.start()
+        
+        logger.info(f"Server started on port {port}")
         
         return {
             "success": True,
@@ -40,19 +52,22 @@ class Plugin:
         }
     
     async def stop_server(self):
-        """Arrête le serveur"""
-        if self.server_task:
-            self.server_task.cancel()
-            self.server_task = None
-            self.access_code = None
-            self.connected_clients.clear()
-            return {"success": True}
-        return {"success": False, "error": "Server not running"}
+        """Stops the server"""
+        if self.server_site:
+            await self.server_site.stop()
+            self.server_site = None
+        if self.server_runner:
+            await self.server_runner.cleanup()
+            self.server_runner = None
+        self.access_code = None
+        self.connected_clients.clear()
+        logger.info("Server stopped")
+        return {"success": True}
     
     async def get_server_status(self):
-        """Retourne le statut du serveur"""
+        """Returns server status"""
         return {
-            "running": self.server_task is not None,
+            "running": self.server_runner is not None,
             "code": self.access_code,
             "clients": len(self.connected_clients)
         }
@@ -63,68 +78,91 @@ class Plugin:
         await ws.prepare(request)
         
         authenticated = False
+        logger.info("New WebSocket connection")
         
-        async for msg in ws:
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                data = msg.json()
+        try:
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    try:
+                        data = msg.json()
+                        
+                        if not authenticated:
+                            if data.get('type') == 'auth':
+                                if data.get('code') == self.access_code:
+                                    authenticated = True
+                                    self.connected_clients.add(ws)
+                                    await ws.send_json({"type": "auth_success"})
+                                    logger.info("Client authenticated")
+                                else:
+                                    await ws.send_json({"type": "auth_failed"})
+                                    await ws.close()
+                                    logger.warning("Client authentication failed")
+                                    break
+                            continue
+                        
+                        if data.get('type') == 'keydown':
+                            await self.inject_key(data['key'], data.get('modifiers', []), press=True)
+                        elif data.get('type') == 'keyup':
+                            await self.inject_key(data['key'], data.get('modifiers', []), press=False)
+                        
+                        await ws.send_json({"type": "ack", "key": data['key']})
+                    
+                    except Exception as e:
+                        logger.error(f"Error processing message: {e}")
+                        await ws.send_json({"type": "error", "message": str(e)})
                 
-                # Authentification
-                if not authenticated:
-                    if data.get('type') == 'auth':
-                        if data.get('code') == self.access_code:
-                            authenticated = True
-                            self.connected_clients.add(ws)
-                            await ws.send_json({"type": "auth_success"})
-                        else:
-                            await ws.send_json({"type": "auth_failed"})
-                            await ws.close()
-                            break
-                    continue
-                
-                # Traitement des touches
-                if data.get('type') == 'keydown':
-                    await self.inject_key(data['key'], data.get('modifiers', []), press=True)
-                elif data.get('type') == 'keyup':
-                    await self.inject_key(data['key'], data.get('modifiers', []), press=False)
-                
-                # Acknowledge
-                await ws.send_json({"type": "ack"})
-            
-            elif msg.type == aiohttp.WSMsgType.ERROR:
-                break
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    logger.error(f'WebSocket connection closed with exception {ws.exception()}')
+                    break
         
-        if ws in self.connected_clients:
-            self.connected_clients.remove(ws)
+        except Exception as e:
+            logger.error(f"WebSocket error: {e}")
+        
+        finally:
+            if ws in self.connected_clients:
+                self.connected_clients.remove(ws)
+            logger.info("WebSocket connection closed")
         
         return ws
     
     async def inject_key(self, key, modifiers, press=True):
-        """Injecte une touche via ydotool"""
-        # Mapping JS key → ydotool key code
-        key_map = {
-            'Enter': '28:1' if press else '28:0',
-            'Backspace': '14:1' if press else '14:0',
-            'Tab': '15:1' if press else '15:0',
-            'Escape': '1:1' if press else '1:0',
-            'ArrowUp': '103:1' if press else '103:0',
-            'ArrowDown': '108:1' if press else '108:0',
-            'ArrowLeft': '105:1' if press else '105:0',
-            'ArrowRight': '106:1' if press else '106:0',
-            # Pour les lettres/chiffres, on utilise directement type
-        }
+        """Inject key via ydotool"""
+        try:
+            key_map = {
+                'Enter': '28',
+                'Backspace': '14',
+                'Tab': '15',
+                'Escape': '1',
+                'ArrowUp': '103',
+                'ArrowDown': '108',
+                'ArrowLeft': '105',
+                'ArrowRight': '106',
+                'Delete': '111',
+                'Home': '102',
+                'End': '107',
+                'PageUp': '104',
+                'PageDown': '109',
+                'Insert': '110',
+                'Space': '57',
+            }
+            
+            if key in key_map:
+                keycode = key_map[key]
+                action = '1' if press else '0'
+                subprocess.run(['ydotool', 'key', f'{keycode}:{action}'], 
+                             capture_output=True, check=False)
+                logger.info(f"Injected key: {key} ({keycode}:{action})")
+            else:
+                if press and len(key) == 1:
+                    subprocess.run(['ydotool', 'type', key], 
+                                 capture_output=True, check=False)
+                    logger.info(f"Typed character: {key}")
         
-        # Si c'est une touche spéciale
-        if key in key_map:
-            subprocess.run(['ydotool', 'key', key_map[key]], 
-                         capture_output=True)
-        else:
-            # Pour les caractères normaux, utilise type
-            if press:  # On envoie seulement au press, pas au release
-                subprocess.run(['ydotool', 'type', key], 
-                             capture_output=True)
+        except Exception as e:
+            logger.error(f"Error injecting key: {e}")
+            logger.info(f"Error injecting key: {e}")
     
     async def serve_client_page(self, request):
-        """Sert la page HTML cliente"""
         html = """
 <!DOCTYPE html>
 <html>
@@ -151,6 +189,7 @@ class Plugin:
             background: #2a2a2a;
             border: 1px solid #444;
             color: #fff;
+            box-sizing: border-box;
         }
         button {
             padding: 10px 20px;
@@ -168,6 +207,10 @@ class Plugin:
         }
         .connected { background: #1a5f1a; }
         .disconnected { background: #5f1a1a; }
+        #auth-error {
+            color: #ff6b6b;
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
@@ -195,11 +238,13 @@ class Plugin:
             ws = new WebSocket(protocol + '//' + window.location.host + '/ws');
             
             ws.onopen = () => {
+                console.log('WebSocket connected');
                 ws.send(JSON.stringify({ type: 'auth', code: code }));
             };
             
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
+                console.log('Received:', data);
                 
                 if (data.type === 'auth_success') {
                     authenticated = true;
@@ -208,10 +253,21 @@ class Plugin:
                     document.getElementById('input').focus();
                 } else if (data.type === 'auth_failed') {
                     document.getElementById('auth-error').textContent = 'Invalid code';
+                } else if (data.type === 'error') {
+                    console.error('Server error:', data.message);
                 }
             };
             
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                document.getElementById('status').textContent = 'Connection error';
+                document.getElementById('status').classList.remove('connected');
+                document.getElementById('status').classList.add('disconnected');
+            };
+            
             ws.onclose = () => {
+                console.log('WebSocket closed');
+                authenticated = false;
                 document.getElementById('status').textContent = 'Disconnected';
                 document.getElementById('status').classList.remove('connected');
                 document.getElementById('status').classList.add('disconnected');
@@ -222,14 +278,14 @@ class Plugin:
             const input = document.getElementById('input');
             
             input.addEventListener('keydown', (e) => {
-                if (!authenticated || !ws) return;
+                if (!authenticated || !ws || ws.readyState !== WebSocket.OPEN) return;
                 
                 // Empêche le comportement par défaut pour certaines touches
                 if (['Tab', 'Escape'].includes(e.key)) {
                     e.preventDefault();
                 }
                 
-                ws.send(JSON.stringify({
+                const message = {
                     type: 'keydown',
                     key: e.key,
                     modifiers: [
@@ -237,16 +293,21 @@ class Plugin:
                         e.altKey ? 'alt' : null,
                         e.shiftKey ? 'shift' : null
                     ].filter(Boolean)
-                }));
+                };
+                
+                console.log('Sending:', message);
+                ws.send(JSON.stringify(message));
             });
             
             input.addEventListener('keyup', (e) => {
-                if (!authenticated || !ws) return;
+                if (!authenticated || !ws || ws.readyState !== WebSocket.OPEN) return;
                 
-                ws.send(JSON.stringify({
+                const message = {
                     type: 'keyup',
                     key: e.key
-                }));
+                };
+                
+                ws.send(JSON.stringify(message));
             });
         });
     </script>
