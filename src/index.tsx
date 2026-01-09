@@ -1,115 +1,93 @@
 import {
   ButtonItem,
+  definePlugin,
   PanelSection,
   PanelSectionRow,
-  Navigation,
-  staticClasses
-} from "@decky/ui";
-import {
-  addEventListener,
-  removeEventListener,
-  callable,
-  definePlugin,
-  toaster,
-  // routerHook
-} from "@decky/api"
-import { useState } from "react";
-import { FaShip } from "react-icons/fa";
+  ServerAPI,
+  staticClasses,
+} from "decky-frontend-lib";
+import { VFC, useState, useEffect } from "react";
+import { FaKeyboard } from "react-icons/fa";
 
-// import logo from "../assets/logo.png";
+const Content: VFC<{ serverAPI: ServerAPI }> = ({ serverAPI }) => {
+  const [running, setRunning] = useState(false);
+  const [code, setCode] = useState("");
+  const [clients, setClients] = useState(0);
+  const [port] = useState(8765);
 
-// This function calls the python function "add", which takes in two numbers and returns their sum (as a number)
-// Note the type annotations:
-//  the first one: [first: number, second: number] is for the arguments
-//  the second one: number is for the return value
-const add = callable<[first: number, second: number], number>("add");
+  useEffect(() => {
+    updateStatus();
+    const interval = setInterval(updateStatus, 2000);
+    return () => clearInterval(interval);
+  }, []);
 
-// This function calls the python function "start_timer", which takes in no arguments and returns nothing.
-// It starts a (python) timer which eventually emits the event 'timer_event'
-const startTimer = callable<[], void>("start_timer");
+  const updateStatus = async () => {
+    const result = await serverAPI.callPluginMethod("get_server_status", {});
+    if (result.success) {
+      setRunning(result.result.running);
+      setCode(result.result.code || "");
+      setClients(result.result.clients || 0);
+    }
+  };
 
-function Content() {
-  const [result, setResult] = useState<number | undefined>();
+  const startServer = async () => {
+    const result = await serverAPI.callPluginMethod("start_server", { port });
+    if (result.success) {
+      updateStatus();
+    }
+  };
 
-  const onClick = async () => {
-    const result = await add(Math.random(), Math.random());
-    setResult(result);
+  const stopServer = async () => {
+    await serverAPI.callPluginMethod("stop_server", {});
+    updateStatus();
+  };
+
+  const getLocalIP = () => {
+    // Tu devras peut-être ajouter une méthode backend pour récupérer l'IP
+    return "steamdeck.local"; // Ou l'IP locale
   };
 
   return (
-    <PanelSection title="Panel Section">
+    <PanelSection title="Remote Keyboard">
       <PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          onClick={onClick}
-        >
-          {result ?? "Add two numbers via Python"}
-        </ButtonItem>
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          onClick={() => startTimer()}
-        >
-          {"Start Python timer"}
-        </ButtonItem>
+        {!running ? (
+          <ButtonItem layout="below" onClick={startServer}>
+            Start Server
+          </ButtonItem>
+        ) : (
+          <ButtonItem layout="below" onClick={stopServer}>
+            Stop Server
+          </ButtonItem>
+        )}
       </PanelSectionRow>
 
-      {/* <PanelSectionRow>
-        <div style={{ display: "flex", justifyContent: "center" }}>
-          <img src={logo} />
-        </div>
-      </PanelSectionRow> */}
-
-      {/*<PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          onClick={() => {
-            Navigation.Navigate("/decky-plugin-test");
-            Navigation.CloseSideMenus();
-          }}
-        >
-          Router
-        </ButtonItem>
-      </PanelSectionRow>*/}
+      {running && (
+        <>
+          <PanelSectionRow>
+            <div style={{ fontSize: "14px" }}>
+              <strong>URL:</strong> http://{getLocalIP()}:{port}
+            </div>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <div style={{ fontSize: "20px", fontWeight: "bold", textAlign: "center" }}>
+              Code: {code}
+            </div>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <div style={{ fontSize: "12px", color: "#aaa" }}>
+              Connected clients: {clients}
+            </div>
+          </PanelSectionRow>
+        </>
+      )}
     </PanelSection>
   );
 };
 
-export default definePlugin(() => {
-  console.log("Template plugin initializing, this is called once on frontend startup")
-
-  // serverApi.routerHook.addRoute("/decky-plugin-test", DeckyPluginRouterTest, {
-  //   exact: true,
-  // });
-
-  // Add an event listener to the "timer_event" event from the backend
-  const listener = addEventListener<[
-    test1: string,
-    test2: boolean,
-    test3: number
-  ]>("timer_event", (test1, test2, test3) => {
-    console.log("Template got timer_event with:", test1, test2, test3)
-    toaster.toast({
-      title: "template got timer_event",
-      body: `${test1}, ${test2}, ${test3}`
-    });
-  });
-
+export default definePlugin((serverApi: ServerAPI) => {
   return {
-    // The name shown in various decky menus
-    name: "Test Plugin",
-    // The element displayed at the top of your plugin's menu
-    titleView: <div className={staticClasses.Title}>Decky Example Plugin</div>,
-    // The content of your plugin's menu
-    content: <Content />,
-    // The icon displayed in the plugin list
-    icon: <FaShip />,
-    // The function triggered when your plugin unloads
-    onDismount() {
-      console.log("Unloading")
-      removeEventListener("timer_event", listener);
-      // serverApi.routerHook.removeRoute("/decky-plugin-test");
-    },
+    title: <div className={staticClasses.Title}>Remote Keyboard</div>,
+    content: <Content serverAPI={serverApi} />,
+    icon: <FaKeyboard />,
   };
 });
