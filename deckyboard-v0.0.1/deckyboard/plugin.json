@@ -1,0 +1,11 @@
+{
+  "name": "Deckyboard",
+  "author": "Corentin Mace",
+  "flags": ["debug", "_root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["keyboard", "root"],
+    "description": "Tired of the Steam Deck keyboard. Use web browser on any device to send keyboard inputs to your Steam Deck.",
+    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
+  }
+}

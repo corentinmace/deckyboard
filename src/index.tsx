@@ -6,10 +6,20 @@ import {
   ServerAPI,
   staticClasses,
 } from "decky-frontend-lib";
-import { VFC, useState, useEffect } from "react";
+import { FC, useState, useEffect } from "react";
 import { FaKeyboard } from "react-icons/fa";
 
-const Content: VFC<{ serverAPI: ServerAPI }> = ({ serverAPI }) => {
+interface ContentProps {
+  serverAPI: ServerAPI;
+}
+
+interface ServerStatus {
+  running: boolean;
+  code: string | null;
+  clients: number;
+}
+
+const Content: FC<ContentProps> = ({ serverAPI }) => {
   const [running, setRunning] = useState(false);
   const [code, setCode] = useState("");
   const [clients, setClients] = useState(0);
@@ -22,7 +32,7 @@ const Content: VFC<{ serverAPI: ServerAPI }> = ({ serverAPI }) => {
   }, []);
 
   const updateStatus = async () => {
-    const result = await serverAPI.callPluginMethod("get_server_status", {});
+    const result = await serverAPI.callPluginMethod<{}, ServerStatus>("get_server_status", {});
     if (result.success) {
       setRunning(result.result.running);
       setCode(result.result.code || "");
@@ -43,21 +53,16 @@ const Content: VFC<{ serverAPI: ServerAPI }> = ({ serverAPI }) => {
   };
 
   const getLocalIP = () => {
-    // Tu devras peut-être ajouter une méthode backend pour récupérer l'IP
-    return "steamdeck.local"; // Ou l'IP locale
+    return "steamdeck.local";
   };
 
   return (
     <PanelSection title="Remote Keyboard">
       <PanelSectionRow>
         {!running ? (
-          <ButtonItem layout="below" onClick={startServer}>
-            Start Server
-          </ButtonItem>
+          <ButtonItem layout="below" onClick={startServer} label="Start Server" />
         ) : (
-          <ButtonItem layout="below" onClick={stopServer}>
-            Stop Server
-          </ButtonItem>
+          <ButtonItem layout="below" onClick={stopServer} label="Stop Server" />
         )}
       </PanelSectionRow>
 
